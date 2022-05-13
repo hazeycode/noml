@@ -1,4 +1,4 @@
 # noml
 
-Experimental functional extension language
+Experimental, tiny pure-functional expression language
 
