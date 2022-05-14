@@ -7,8 +7,27 @@ const builtin_fns = .{
 };
 
 const Expression = struct {
-    kind: enum { constant, func, list, map },
-    next: ?*@This(),
+    token: Token = undefined,
+    @"error": ParseError = ParseError.none,
+    children: std.ArrayList(@This()),
+    
+    pub fn init(allocator: std.mem.Allocator) @This() {
+        return .{
+            .children = std.ArrayList(@This()).init(allocator),
+        };
+    }
+    
+    pub fn deinit(self: @This()) void {
+        for (self.children.items) |child| {
+            child.deinit();
+        }
+        self.children.deinit();
+    }
+};
+
+const ParseError = error {
+    none,
+    unexpected_token,
 };
 
 const Token = struct {
@@ -48,9 +67,16 @@ const Token = struct {
         .{ "*", .times },
         .{ "/", .divide },
     });
+    
+    pub fn isTerminal(self: @This()) bool {
+        return switch (self.type) {
+            .number, .paren_close, .list_close, .tuple_close => true,
+            else => false, 
+        };
+    }
 };
 
-pub const Tokeniser = struct {
+const Tokeniser = struct {
     bytes: []const u8,
     cursor: usize,
 
@@ -111,22 +137,111 @@ pub const Tokeniser = struct {
             },
         };
     }
+    
+    pub fn rewind(self: *@This()) !void {
+        if (self.cursor == 0) return error.StartOfStream;
+        self.cursor -= 1;
+    }
 };
 
-pub fn tokenise(bytes: []const u8) Tokeniser {
+fn tokenise(bytes: []const u8) Tokeniser {
     return .{
         .bytes = bytes,
         .cursor = 0,
     };
 }
 
-pub fn parse(_: anytype) ?Expression {}
+/// Caller should call `deinit` on the returned Expression to free allocated memory
+pub fn parse(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!Expression {
+    var res = Expression.init(allocator);
+    errdefer res.deinit();
+    
+    if (tokeniser.next()) |token| {
+        switch (token.type) {
+            .string => {
+                res.token = token;
+            },
+            .number => {
+                if (tokeniser.next()) |next_token| {
+                    res.token = next_token;
+                    
+                    var lhs = Expression.init(allocator);
+                    errdefer lhs.deinit();
+                    
+                    lhs.token = token;
+                    
+                    try res.children.append(lhs);
+                    
+                    switch (next_token.type) {
+                        .plus, .minus, .times, .divide => {
+                        },
+                        else => {
+                            res.@"error" = ParseError.unexpected_token;
+                        }
+                    }
+                    
+                    if (tokeniser.next()) |next_next_token| {
+                        var rhs = Expression.init(allocator);
+                        errdefer rhs.deinit();
+                        
+                        rhs.token = next_next_token;
+                        
+                        try res.children.append(rhs);
+                    
+                        switch (next_next_token.type) {
+                            .number => {
+                            },
+                            else => {
+                                res.@"error" = ParseError.unexpected_token;
+                            }
+                        }
+                    }
+                }
+                else {
+                    res.token = token;
+                }
+            },
+            .list_open => {
+                res.token = token;
+                while (tokeniser.next()) |next_token| {
+                    switch (next_token.type) {
+                        .separator => {},
+                        .list_close => break,
+                        .paren_close, .tuple_close => {
+                            res.@"error" = ParseError.unexpected_token;
+                        },
+                        else => {
+                            try tokeniser.rewind();
+                        }
+                    }
+                    
+                    const elem = try parse(allocator, tokeniser);
+                    errdefer elem.deinit();       
+                    
+                    try res.children.append(elem);
+                }
+            },
+            else => {
+                res.@"error" = ParseError.unexpected_token;
+            }
+        }
+    }
+    
+    return res;
+}
+
+/// Parses source bytes
+/// Caller should call `deinit` on the returned Expression to free allocated memory
+pub fn parseBytes(allocator: std.mem.Allocator, bytes: []const u8) !Expression {
+    var tokeniser = tokenise(bytes);
+    return parse(allocator, &tokeniser);
+}
 
 pub fn evaluate(_: Expression, _: anytype) Expression {}
 
-test "tokenise" {
-    const testing = std.testing;
+const testing = std.testing;
 
+test "tokenise" {
     const test_input: []const u8 = "2 + 15 * -(100 - 1472) / 2";
 
     const expected_result = .{
@@ -156,3 +271,31 @@ test "tokenise" {
 
     try testing.expectEqualSlices(Token, &expected_result, tokens.items);
 }
+
+test "parse" {
+    const test_input: []const u8 = "2 + 15";
+
+    var expected_result = Expression{
+         .token = .{ .position = 2, .len = 1, .type = .plus },
+         .@"error" = ParseError.none,
+         .children = std.ArrayList(Expression).init(std.testing.allocator),
+    };
+    try expected_result.children.append(.{
+        .token = .{ .position = 0, .len = 1, .type = .number },
+        .@"error" = ParseError.none,
+        .children = std.ArrayList(Expression).init(std.testing.allocator),
+    });
+    try expected_result.children.append(.{
+        .token = .{ .position = 4, .len = 2, .type = .number },
+        .@"error" = ParseError.none,
+        .children = std.ArrayList(Expression).init(std.testing.allocator),
+    });
+    defer expected_result.deinit();
+    
+    const result = try parseBytes(std.testing.allocator, test_input);
+    defer result.deinit();
+    
+    try testing.expectEqual(expected_result.token, result.token);
+    try testing.expectEqualSlices(Expression, expected_result.children.items, result.children.items);
+}
+
