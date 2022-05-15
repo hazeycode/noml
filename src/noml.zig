@@ -8,7 +8,7 @@ const builtin_fns = .{
 
 const Expression = struct {
     token: Token = undefined,
-    @"error": ParseError = ParseError.none,
+    @"error": ParseError = ParseError.None,
     children: std.ArrayList(@This()),
     
     pub fn init(allocator: std.mem.Allocator) @This() {
@@ -26,8 +26,9 @@ const Expression = struct {
 };
 
 const ParseError = error {
-    none,
-    unexpected_token,
+    None,
+    UnexpectedToken,
+    ExpectedToken,
 };
 
 const Token = struct {
@@ -138,9 +139,9 @@ const Tokeniser = struct {
         };
     }
     
-    pub fn rewind(self: *@This()) !void {
-        if (self.cursor == 0) return error.StartOfStream;
-        self.cursor -= 1;
+    pub fn putBack(self: *@This(), token: Token) !void {
+        if (self.cursor - token.len != token.position) return error.TokenPutBackOutOfSequence;
+        self.cursor -= token.len;
     }
 };
 
@@ -176,7 +177,7 @@ pub fn parse(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!Expre
                         .plus, .minus, .times, .divide => {
                         },
                         else => {
-                            res.@"error" = ParseError.unexpected_token;
+                            res.@"error" = ParseError.UnexpectedToken;
                         }
                     }
                     
@@ -192,7 +193,7 @@ pub fn parse(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!Expre
                             .number => {
                             },
                             else => {
-                                res.@"error" = ParseError.unexpected_token;
+                                res.@"error" = ParseError.UnexpectedToken;
                             }
                         }
                     }
@@ -208,10 +209,10 @@ pub fn parse(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!Expre
                         .separator => {},
                         .list_close => break,
                         .paren_close, .tuple_close => {
-                            res.@"error" = ParseError.unexpected_token;
+                            res.@"error" = ParseError.UnexpectedToken;
                         },
                         else => {
-                            try tokeniser.rewind();
+                            try tokeniser.putBack(next_token);
                         }
                     }
                     
@@ -222,7 +223,7 @@ pub fn parse(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!Expre
                 }
             },
             else => {
-                res.@"error" = ParseError.unexpected_token;
+                res.@"error" = ParseError.UnexpectedToken;
             }
         }
     }
@@ -277,17 +278,17 @@ test "parse" {
 
     var expected_result = Expression{
          .token = .{ .position = 2, .len = 1, .type = .plus },
-         .@"error" = ParseError.none,
+         .@"error" = ParseError.None,
          .children = std.ArrayList(Expression).init(std.testing.allocator),
     };
     try expected_result.children.append(.{
         .token = .{ .position = 0, .len = 1, .type = .number },
-        .@"error" = ParseError.none,
+        .@"error" = ParseError.None,
         .children = std.ArrayList(Expression).init(std.testing.allocator),
     });
     try expected_result.children.append(.{
         .token = .{ .position = 4, .len = 2, .type = .number },
-        .@"error" = ParseError.none,
+        .@"error" = ParseError.None,
         .children = std.ArrayList(Expression).init(std.testing.allocator),
     });
     defer expected_result.deinit();
