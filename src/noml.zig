@@ -130,13 +130,6 @@ const Tokeniser = struct {
             },
         };
     }
-    
-    pub fn putBack(self: *@This(), token: Token) !void {
-        // NOTE(hazeycode): Will error if there's whitespace between the token position in the stream and the
-        // current cursor. This is fine right now because we only ever go back one token.
-        if (self.cursor - token.len != token.position) return error.TokenPutBackOutOfSequence;
-        self.cursor -= token.len;
-    }
 };
 
 fn tokenise(bytes: []const u8) Tokeniser {
