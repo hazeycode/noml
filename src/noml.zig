@@ -7,28 +7,14 @@ const builtin_fns = .{
 };
 
 const Expression = struct {
-    token: Token = undefined,
+    token: Token,
     @"error": ParseError = ParseError.None,
-    children: std.ArrayList(@This()),
-    
-    pub fn init(allocator: std.mem.Allocator) @This() {
-        return .{
-            .children = std.ArrayList(@This()).init(allocator),
-        };
-    }
-    
-    pub fn deinit(self: @This()) void {
-        for (self.children.items) |child| {
-            child.deinit();
-        }
-        self.children.deinit();
-    }
+    next: ?*Expression = null,
 };
 
 const ParseError = error {
     None,
     UnexpectedToken,
-    ExpectedToken,
 };
 
 const Token = struct {
@@ -40,7 +26,6 @@ const Token = struct {
         symbol,
         string,
         number,
-        separator,
         paren_open,
         paren_close,
         list_open,
@@ -55,7 +40,6 @@ const Token = struct {
     };
 
     const type_map = std.ComptimeStringMap(Type, .{
-        .{ ",", .separator },
         .{ "(", .paren_open },
         .{ ")", .paren_close },
         .{ "[", .list_open },
@@ -69,10 +53,18 @@ const Token = struct {
         .{ "/", .divide },
     });
     
-    pub fn isTerminal(self: @This()) bool {
+    pub fn associativity(self: *@This()) enum { left, right, none } {
+        return switch(self.type) {
+            .plus, .minus .times, .divide => .left,
+            else => .none,
+        };
+    }
+    
+    pub fn precedence(self: @This()) u32 {
         return switch (self.type) {
-            .number, .paren_close, .list_close, .tuple_close => true,
-            else => false, 
+            .plus, .minus => 10,
+            .times, .divide => 11,
+            else => 0, 
         };
     }
 };
@@ -140,6 +132,8 @@ const Tokeniser = struct {
     }
     
     pub fn putBack(self: *@This(), token: Token) !void {
+        // NOTE(hazeycode): Will error if there's whitespace between the token position in the stream and the
+        // current cursor. This is fine right now because we only ever go back one token.
         if (self.cursor - token.len != token.position) return error.TokenPutBackOutOfSequence;
         self.cursor -= token.len;
     }
@@ -152,93 +146,87 @@ fn tokenise(bytes: []const u8) Tokeniser {
     };
 }
 
-/// Caller should call `deinit` on the returned Expression to free allocated memory
-pub fn parse(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!Expression {
-    var res = Expression.init(allocator);
-    errdefer res.deinit();
-    
+fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Expression {
     if (tokeniser.next()) |token| {
         switch (token.type) {
-            .string => {
-                res.token = token;
+            .minus => {
+                var res = Expression{
+                    .token = token,
+                };
+                if (try expression(allocator, tokeniser)) |expr| {
+                    res.next = try allocator.create(Expression);
+                    res.next.?.* = expr;
+                }
+                return res;
             },
             .number => {
-                if (tokeniser.next()) |next_token| {
-                    res.token = next_token;
+                if (tokeniser.next()) |operator_token| {
+                    var expr0 = Expression{
+                        .token = operator_token,
+                        .next = try allocator.create(Expression),
+                    };
+                    expr0.next.?.token = token;
                     
-                    var lhs = Expression.init(allocator);
-                    errdefer lhs.deinit();
-                    
-                    lhs.token = token;
-                    
-                    try res.children.append(lhs);
-                    
-                    switch (next_token.type) {
-                        .plus, .minus, .times, .divide => {
+                    switch (operator_token.type) {
+                        .equal, .plus, .minus, .times, .divide => {                         
+                            if (try expression(allocator, tokeniser)) |expr1| {
+                                switch (expr1.token.type) {
+                                    .number => {
+                                        expr0.next.?.next.? = try allocator.create(Expression);
+                                        expr0.next.?.next.?.* = expr1;
+                                    },
+                                    .equal, .plus, .minus, .times, .divide => {
+                                        if (expr0.token.precedence() >= expr1.token.precedence()) {
+                                            expr1.next.?.* = expr0;
+                                        }
+                                        else {
+                                            expr0.next.?.next = try allocator.create(Expression);
+                                            expr0.next.?.next.?.* = expr1;
+                                        }
+                                    },
+                                    else => {
+                                        expr0.next.?.@"error" = ParseError.UnexpectedToken;
+                                    }
+                                }
+                            }
                         },
                         else => {
-                            res.@"error" = ParseError.UnexpectedToken;
+                            expr0.@"error" = ParseError.UnexpectedToken;
                         }
                     }
                     
-                    if (tokeniser.next()) |next_next_token| {
-                        var rhs = Expression.init(allocator);
-                        errdefer rhs.deinit();
-                        
-                        rhs.token = next_next_token;
-                        
-                        try res.children.append(rhs);
-                    
-                        switch (next_next_token.type) {
-                            .number => {
-                            },
-                            else => {
-                                res.@"error" = ParseError.UnexpectedToken;
-                            }
-                        }
-                    }
+                    return expr0;
                 }
                 else {
-                    res.token = token;
+                    return Expression{
+                        .token = token,
+                    };
                 }
             },
-            .list_open => {
-                res.token = token;
-                while (tokeniser.next()) |next_token| {
-                    switch (next_token.type) {
-                        .separator => {},
-                        .list_close => break,
-                        .paren_close, .tuple_close => {
-                            res.@"error" = ParseError.UnexpectedToken;
-                        },
-                        else => {
-                            try tokeniser.putBack(next_token);
-                        }
-                    }
-                    
-                    const elem = try parse(allocator, tokeniser);
-                    errdefer elem.deinit();       
-                    
-                    try res.children.append(elem);
-                }
-            },
-            else => {
-                res.@"error" = ParseError.UnexpectedToken;
-            }
+            else => unreachable,
         }
     }
-    
-    return res;
+    else {
+        return null;
+    }
 }
 
 /// Parses source bytes
 /// Caller should call `deinit` on the returned Expression to free allocated memory
-pub fn parseBytes(allocator: std.mem.Allocator, bytes: []const u8) !Expression {
+pub fn parse(allocator: std.mem.Allocator, bytes: []const u8) !?Expression {
     var tokeniser = tokenise(bytes);
-    return parse(allocator, &tokeniser);
+    return try expression(allocator, &tokeniser);
 }
 
 pub fn evaluate(_: Expression, _: anytype) Expression {}
+
+pub fn free(allocator: std.mem.Allocator, expr: Expression) void {
+    var maybe_cur = expr.next;
+    while (maybe_cur) |cur| {
+        maybe_cur = cur.next;
+        allocator.destroy(cur);
+    }
+}
 
 const testing = std.testing;
 
@@ -274,29 +262,44 @@ test "tokenise" {
 }
 
 test "parse" {
-    const test_input: []const u8 = "2 + 15";
-
-    var expected_result = Expression{
-         .token = .{ .position = 2, .len = 1, .type = .plus },
-         .@"error" = ParseError.None,
-         .children = std.ArrayList(Expression).init(std.testing.allocator),
+    const test_input: []const u8 = "2 + 15 * 100";
+    
+    var expected_100 = Expression{
+        .token = .{ .position = 9, .len = 3, .type = .number },  
     };
-    try expected_result.children.append(.{
-        .token = .{ .position = 0, .len = 1, .type = .number },
-        .@"error" = ParseError.None,
-        .children = std.ArrayList(Expression).init(std.testing.allocator),
-    });
-    try expected_result.children.append(.{
+    
+    var expected_15 = Expression{
         .token = .{ .position = 4, .len = 2, .type = .number },
-        .@"error" = ParseError.None,
-        .children = std.ArrayList(Expression).init(std.testing.allocator),
-    });
-    defer expected_result.deinit();
+        .next = &expected_100,
+    };
     
-    const result = try parseBytes(std.testing.allocator, test_input);
-    defer result.deinit();
+    var expected_times = Expression{
+        .token = .{ .position = 7, .len = 1, .type = .times },
+        .next = &expected_15,
+    };
     
-    try testing.expectEqual(expected_result.token, result.token);
-    try testing.expectEqualSlices(Expression, expected_result.children.items, result.children.items);
+    var expected_2 = Expression{
+        .token = .{ .position = 0, .len = 1, .type = .number },
+        .next = &expected_times,
+    };
+    
+    var expected = Expression{
+        .token = .{ .position = 2, .len = 1, .type = .plus },
+        .next = &expected_2,
+    };
+    
+       
+    var expr = try parse(testing.allocator, test_input);
+    try testing.expect(expr != null);
+    
+    defer free(testing.allocator, expr.?);
+    
+    var maybe_expected_cur: ?*Expression = &expected;
+    var maybe_cur: ?*Expression = &expr.?;
+    while (maybe_expected_cur) |expected_cur| {
+        try testing.expectEqual(expected_cur.token, maybe_cur.?.token);
+        maybe_expected_cur = expected_cur.next;
+        maybe_cur = maybe_cur.?.next;
+    }
 }
 
