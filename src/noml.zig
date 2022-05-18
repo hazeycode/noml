@@ -53,13 +53,6 @@ const Token = struct {
         .{ "in", .keyword_in },
     });
 
-    pub fn associativity(self: *@This()) enum { left, right, none } {
-        return switch (self.type) {
-            .plus, .minus.times, .divide => .left,
-            else => .none,
-        };
-    }
-
     pub fn precedence(self: @This()) u32 {
         return switch (self.tag) {
             .plus, .minus => 10,
@@ -239,6 +232,10 @@ pub fn free(allocator: std.mem.Allocator, expr: Expression) void {
 }
 
 const testing = std.testing;
+
+test {
+    testing.refAllDecls(@This());
+}
 
 test "tokenise" {
     const test_input: []const u8 = "2 + 15 * -(100 - 1472) / 2";
