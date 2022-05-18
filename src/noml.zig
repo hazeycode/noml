@@ -1,18 +1,12 @@
 const std = @import("std");
 
-const builtin_fns = .{
-    "using",
-    "let",
-    "in",
-};
-
 const Expression = struct {
     token: Token,
     @"error": ParseError = ParseError.None,
     next: ?*Expression = null,
 };
 
-const ParseError = error {
+const ParseError = error{
     None,
     UnexpectedToken,
 };
@@ -20,10 +14,10 @@ const ParseError = error {
 const Token = struct {
     position: usize,
     len: usize,
-    type: Type,
+    tag: Tag,
 
-    const Type = enum {
-        symbol,
+    const Tag = enum {
+        identifer,
         string,
         number,
         paren_open,
@@ -37,9 +31,12 @@ const Token = struct {
         minus,
         times,
         divide,
+        keyword_using,
+        keyword_let,
+        keyword_in,
     };
 
-    const type_map = std.ComptimeStringMap(Type, .{
+    const map = std.ComptimeStringMap(Tag, .{
         .{ "(", .paren_open },
         .{ ")", .paren_close },
         .{ "[", .list_open },
@@ -51,20 +48,23 @@ const Token = struct {
         .{ "-", .minus },
         .{ "*", .times },
         .{ "/", .divide },
+        .{ "using", .keyword_using },
+        .{ "let", .keyword_let },
+        .{ "in", .keyword_in },
     });
-    
+
     pub fn associativity(self: *@This()) enum { left, right, none } {
-        return switch(self.type) {
-            .plus, .minus .times, .divide => .left,
+        return switch (self.type) {
+            .plus, .minus.times, .divide => .left,
             else => .none,
         };
     }
-    
+
     pub fn precedence(self: @This()) u32 {
-        return switch (self.type) {
+        return switch (self.tag) {
             .plus, .minus => 10,
             .times, .divide => 11,
-            else => 0, 
+            else => 0,
         };
     }
 };
@@ -86,12 +86,12 @@ const Tokeniser = struct {
             return null;
         }
 
-        if (Token.type_map.get(&.{self.bytes[self.cursor]})) |token_type| {
+        if (Token.map.get(&.{self.bytes[self.cursor]})) |tag| {
             defer self.cursor += 1;
             return Token{
                 .position = self.cursor,
                 .len = 1,
-                .type = token_type,
+                .tag = tag,
             };
         }
 
@@ -113,7 +113,7 @@ const Tokeniser = struct {
             if (std.ascii.isSpace(self.bytes[forward_cursor])) {
                 break;
             }
-            if (Token.type_map.get(&.{self.bytes[forward_cursor]})) |_| {
+            if (Token.map.get(&.{self.bytes[forward_cursor]})) |_| {
                 break;
             }
             forward_cursor += 1;
@@ -124,7 +124,7 @@ const Tokeniser = struct {
         return Token{
             .position = self.cursor,
             .len = forward_cursor - self.cursor,
-            .type = switch (state) {
+            .tag = switch (state) {
                 .number => .number,
                 else => unreachable,
             },
@@ -141,7 +141,7 @@ fn tokenise(bytes: []const u8) Tokeniser {
 
 fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Expression {
     if (tokeniser.next()) |token| {
-        switch (token.type) {
+        switch (token.tag) {
             .minus => {
                 var res = Expression{
                     .token = token,
@@ -153,53 +153,70 @@ fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Exp
                 return res;
             },
             .number => {
-                if (tokeniser.next()) |operator_token| {
-                    var expr0 = Expression{
-                        .token = operator_token,
-                        .next = try allocator.create(Expression),
+                var expr0 = Expression{
+                    .token = token,
+                };
+
+                if (tokeniser.next()) |next_token| {
+                    var expr1 = Expression{
+                        .token = next_token,
                     };
-                    expr0.next.?.token = token;
-                    
-                    switch (operator_token.type) {
-                        .equal, .plus, .minus, .times, .divide => {                         
-                            if (try expression(allocator, tokeniser)) |expr1| {
-                                switch (expr1.token.type) {
-                                    .number => {
-                                        expr0.next.?.next.? = try allocator.create(Expression);
-                                        expr0.next.?.next.?.* = expr1;
-                                    },
+
+                    switch (next_token.tag) {
+                        .equal, .plus, .minus, .times, .divide => {
+                            if (try expression(allocator, tokeniser)) |expr2| {
+                                switch (expr2.token.tag) {
                                     .equal, .plus, .minus, .times, .divide => {
-                                        if (expr0.token.precedence() >= expr1.token.precedence()) {
+                                        if (expr2.token.precedence() < expr1.token.precedence()) {
+                                            const rhs = expr2.next.?.next;
+                                            const temp_lhs_token = expr2.next.?.token;
+
+                                            expr1.next = try allocator.create(Expression);
+                                            expr0.next = try allocator.create(Expression);
+
+                                            expr0.next.?.* = .{
+                                                .token = temp_lhs_token,
+                                            };
+                                            expr0.next.?.next = rhs;
+
                                             expr1.next.?.* = expr0;
-                                        }
-                                        else {
-                                            expr0.next.?.next = try allocator.create(Expression);
-                                            expr0.next.?.next.?.* = expr1;
+                                            expr2.next.?.* = expr1;
+
+                                            return expr2;
                                         }
                                     },
-                                    else => {
-                                        expr0.next.?.@"error" = ParseError.UnexpectedToken;
-                                    }
+                                    else => {},
                                 }
+                                expr0.next = try allocator.create(Expression);
+                                expr0.next.?.* = expr2;
                             }
+
+                            expr1.next = try allocator.create(Expression);
+                            expr1.next.?.* = expr0;
+
+                            return expr1;
                         },
                         else => {
-                            expr0.@"error" = ParseError.UnexpectedToken;
-                        }
+                            expr1.@"error" = ParseError.UnexpectedToken;
+
+                            expr0.next = try allocator.create(Expression);
+                            expr0.next.?.* = expr1;
+
+                            return expr0;
+                        },
                     }
-                    
+                } else {
                     return expr0;
                 }
-                else {
-                    return Expression{
-                        .token = token,
-                    };
-                }
             },
-            else => unreachable,
+            else => {
+                return Expression{
+                    .token = token,
+                    .@"error" = ParseError.UnexpectedToken,
+                };
+            },
         }
-    }
-    else {
+    } else {
         return null;
     }
 }
@@ -227,18 +244,18 @@ test "tokenise" {
     const test_input: []const u8 = "2 + 15 * -(100 - 1472) / 2";
 
     const expected_result = .{
-        Token{ .position = 0, .len = 1, .type = .number },
-        Token{ .position = 2, .len = 1, .type = .plus },
-        Token{ .position = 4, .len = 2, .type = .number },
-        Token{ .position = 7, .len = 1, .type = .times },
-        Token{ .position = 9, .len = 1, .type = .minus },
-        Token{ .position = 10, .len = 1, .type = .paren_open },
-        Token{ .position = 11, .len = 3, .type = .number },
-        Token{ .position = 15, .len = 1, .type = .minus },
-        Token{ .position = 17, .len = 4, .type = .number },
-        Token{ .position = 21, .len = 1, .type = .paren_close },
-        Token{ .position = 23, .len = 1, .type = .divide },
-        Token{ .position = 25, .len = 1, .type = .number },
+        Token{ .position = 0, .len = 1, .tag = .number },
+        Token{ .position = 2, .len = 1, .tag = .plus },
+        Token{ .position = 4, .len = 2, .tag = .number },
+        Token{ .position = 7, .len = 1, .tag = .times },
+        Token{ .position = 9, .len = 1, .tag = .minus },
+        Token{ .position = 10, .len = 1, .tag = .paren_open },
+        Token{ .position = 11, .len = 3, .tag = .number },
+        Token{ .position = 15, .len = 1, .tag = .minus },
+        Token{ .position = 17, .len = 4, .tag = .number },
+        Token{ .position = 21, .len = 1, .tag = .paren_close },
+        Token{ .position = 23, .len = 1, .tag = .divide },
+        Token{ .position = 25, .len = 1, .tag = .number },
     };
 
     var tokeniser = tokenise(test_input);
@@ -255,38 +272,45 @@ test "tokenise" {
 }
 
 test "parse" {
-    const test_input: []const u8 = "2 + 15 * 100";
-    
+    const test_input: []const u8 = "2 + 15 * 100 - 17";
+
+    var expected_17 = Expression{ .token = .{ .position = 15, .len = 2, .tag = .number } };
+
     var expected_100 = Expression{
-        .token = .{ .position = 9, .len = 3, .type = .number },  
+        .token = .{ .position = 9, .len = 3, .tag = .number },
+        .next = &expected_17,
     };
-    
+
     var expected_15 = Expression{
-        .token = .{ .position = 4, .len = 2, .type = .number },
+        .token = .{ .position = 4, .len = 2, .tag = .number },
         .next = &expected_100,
     };
-    
+
     var expected_times = Expression{
-        .token = .{ .position = 7, .len = 1, .type = .times },
+        .token = .{ .position = 7, .len = 1, .tag = .times },
         .next = &expected_15,
     };
-    
-    var expected_2 = Expression{
-        .token = .{ .position = 0, .len = 1, .type = .number },
+
+    var expected_minus = Expression{
+        .token = .{ .position = 13, .len = 1, .tag = .minus },
         .next = &expected_times,
     };
-    
+
+    var expected_2 = Expression{
+        .token = .{ .position = 0, .len = 1, .tag = .number },
+        .next = &expected_minus,
+    };
+
     var expected = Expression{
-        .token = .{ .position = 2, .len = 1, .type = .plus },
+        .token = .{ .position = 2, .len = 1, .tag = .plus },
         .next = &expected_2,
     };
-    
-       
+
     var expr = try parse(testing.allocator, test_input);
     try testing.expect(expr != null);
-    
+
     defer free(testing.allocator, expr.?);
-    
+
     var maybe_expected_cur: ?*Expression = &expected;
     var maybe_cur: ?*Expression = &expr.?;
     while (maybe_expected_cur) |expected_cur| {
@@ -295,4 +319,3 @@ test "parse" {
         maybe_cur = maybe_cur.?.next;
     }
 }
-
