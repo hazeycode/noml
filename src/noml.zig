@@ -17,7 +17,7 @@ const Token = struct {
     tag: Tag,
 
     const Tag = enum {
-        identifer,
+        identifier,
         string,
         number,
         paren_open,
@@ -67,8 +67,6 @@ const Tokeniser = struct {
     cursor: usize,
 
     pub fn next(self: *@This()) ?Token {
-        std.debug.assert(self.cursor <= self.bytes.len);
-
         while (self.cursor < self.bytes.len) {
             if (std.ascii.isSpace(self.bytes[self.cursor])) {
                 self.cursor += 1;
@@ -87,40 +85,79 @@ const Tokeniser = struct {
                 .tag = tag,
             };
         }
-
-        const State = enum {
-            identity,
-            string,
-            number,
-        };
-
-        var state = State.identity;
-
-        if (std.ascii.isDigit(self.bytes[self.cursor])) {
-            state = .number;
-        }
-
+       
+        return if (self.bytes[self.cursor] == '\"') self.string()
+        else if (std.ascii.isDigit(self.bytes[self.cursor])) self.number()
+        else self.identifier();
+    }
+    
+    fn identifier(self: *@This()) Token {
         var forward_cursor = self.cursor + 1;
-
-        while (forward_cursor < self.bytes.len) {
-            if (std.ascii.isSpace(self.bytes[forward_cursor])) {
+        
+        while (forward_cursor < self.bytes.len) : (forward_cursor += 1) {
+            const char = self.bytes[forward_cursor];
+            
+            if (std.ascii.isSpace(char)) {
                 break;
             }
-            if (Token.map.get(&.{self.bytes[forward_cursor]})) |_| {
+            if (Token.map.get(&.{char})) |_| {
                 break;
             }
-            forward_cursor += 1;
         }
-
+        
         defer self.cursor = forward_cursor;
-
-        return Token{
+        
+        return Token {
             .position = self.cursor,
             .len = forward_cursor - self.cursor,
-            .tag = switch (state) {
-                .number => .number,
-                else => unreachable,
-            },
+            .tag = .identifier,
+        };
+    }
+    
+    fn string(self: *@This()) Token {
+        var forward_cursor = self.cursor + 1;
+        
+        while (forward_cursor < self.bytes.len) : (forward_cursor += 1) {        
+            if (self.bytes[forward_cursor] == '\"') {
+                break;
+            }
+        }
+        
+        defer self.cursor = forward_cursor;
+        
+        const start = self.cursor + 1;
+        const end = forward_cursor - 1;
+        return Token {
+            .position = start,
+            .len = end - start,
+            .tag = .string,
+        };
+    }
+    
+    fn number(self: *@This()) Token {
+        var forward_cursor = self.cursor + 1;
+        var decimal_point_encountered = false;
+        
+        while (forward_cursor < self.bytes.len) : (forward_cursor += 1) {
+            const char = self.bytes[forward_cursor];
+            
+            if (char == '.') {
+                if (decimal_point_encountered) {
+                    break;
+                }
+                decimal_point_encountered = true;
+            }
+            else if (std.ascii.isDigit(char) == false) {
+                break;
+            }
+        }
+        
+        defer self.cursor = forward_cursor;
+        
+        return Token {
+            .position = self.cursor,
+            .len = forward_cursor - self.cursor,
+            .tag = .number,
         };
     }
 };
