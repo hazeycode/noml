@@ -17,6 +17,7 @@ const Token = struct {
     tag: Tag,
 
     const Tag = enum {
+        invalid_bytes,
         identifier,
         string,
         number,
@@ -86,10 +87,17 @@ const Tokeniser = struct {
             };
         }
        
-        return if (std.ascii.isAlpha(self.bytes[self.cursor])) self.identifier()
-        else if (self.bytes[self.cursor] == '\"') self.string()
-        else if (std.ascii.isDigit(self.bytes[self.cursor])) self.number()
-        else null; // TODO(hazeycode): return error, invalid character in stream
+        if (std.ascii.isAlpha(self.bytes[self.cursor])) return self.identifier()
+        else if (self.bytes[self.cursor] == '\"') return self.string()
+        else if (std.ascii.isDigit(self.bytes[self.cursor])) return self.number()
+        else {
+            defer self.cursor += 1;
+            return Token{
+                .position = self.cursor,
+                .len = 1,
+                .tag = .invalid_bytes,    
+            };
+        }
     }
     
     fn identifier(self: *@This()) Token {
@@ -329,6 +337,16 @@ test "tokenise string literals" {
         Token{ .position = 1, .len = 26, .tag = .string },
     };
     
+    try testTokenise(test_input, &expected_result);
+}
+
+test "tokenise invalid bytes" {
+    const test_input: []const u8 = "$";
+
+    const expected_result = .{
+        Token{ .position = 0, .len = 1, .tag = .invalid_bytes },
+    };
+
     try testTokenise(test_input, &expected_result);
 }
 
