@@ -86,9 +86,10 @@ const Tokeniser = struct {
             };
         }
        
-        return if (self.bytes[self.cursor] == '\"') self.string()
+        return if (std.ascii.isAlpha(self.bytes[self.cursor])) self.identifier()
+        else if (self.bytes[self.cursor] == '\"') self.string()
         else if (std.ascii.isDigit(self.bytes[self.cursor])) self.number()
-        else self.identifier();
+        else null; // TODO(hazeycode): return error, invalid character in stream
     }
     
     fn identifier(self: *@This()) Token {
@@ -116,17 +117,27 @@ const Tokeniser = struct {
     
     fn string(self: *@This()) Token {
         var forward_cursor = self.cursor + 1;
+        var escape_next = false;
         
-        while (forward_cursor < self.bytes.len) : (forward_cursor += 1) {        
-            if (self.bytes[forward_cursor] == '\"') {
+        while (forward_cursor < self.bytes.len) : (forward_cursor += 1) {
+            const char = self.bytes[forward_cursor];
+            
+            if (char == '\\') {
+                escape_next = true;
+            }
+            else if (escape_next == false and self.bytes[forward_cursor] == '"') {
                 break;
+            }
+            else if (escape_next) {
+                escape_next = false;
             }
         }
         
-        defer self.cursor = forward_cursor;
+        defer self.cursor = forward_cursor + 1;
         
         const start = self.cursor + 1;
-        const end = forward_cursor - 1;
+        const end = forward_cursor;
+        
         return Token {
             .position = start,
             .len = end - start,
@@ -270,11 +281,25 @@ pub fn free(allocator: std.mem.Allocator, expr: Expression) void {
 
 const testing = std.testing;
 
+fn testTokenise(input: []const u8, expected: []const Token) !void {
+    var tokeniser = tokenise(input);
+
+    var tokens = std.ArrayList(Token).init(testing.allocator);
+
+    defer tokens.deinit();
+
+    while (tokeniser.next()) |token| {
+        try tokens.append(token);
+    }
+    
+    try testing.expectEqualSlices(Token, expected, tokens.items);
+}
+
 test {
     testing.refAllDecls(@This());
 }
 
-test "tokenise" {
+test "tokenise arithmetic" {
     const test_input: []const u8 = "2 + 15 * -(100 - 1472) / 2";
 
     const expected_result = .{
@@ -292,17 +317,19 @@ test "tokenise" {
         Token{ .position = 25, .len = 1, .tag = .number },
     };
 
-    var tokeniser = tokenise(test_input);
+    try testTokenise(test_input, &expected_result);
+}
 
-    var tokens = std.ArrayList(Token).init(testing.allocator);
-
-    defer tokens.deinit();
-
-    while (tokeniser.next()) |token| {
-        try tokens.append(token);
-    }
-
-    try testing.expectEqualSlices(Token, &expected_result, tokens.items);
+test "tokenise string literals" {
+    const test_input: []const u8 =
+        \\"Behold! I am a \"string\"!"
+    ;
+    
+    const expected_result = .{
+        Token{ .position = 1, .len = 26, .tag = .string },
+    };
+    
+    try testTokenise(test_input, &expected_result);
 }
 
 test "parse" {
