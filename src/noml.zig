@@ -90,10 +90,10 @@ const Token = struct {
 
     pub fn precedence(self: @This()) u32 {
         return switch (self.tag) {
-            .plus, .minus => 10,
-            .times, .divide => 11,
             .keyword_or => 20,
             .keyword_and => 21,
+            .plus, .minus => 30,
+            .times, .divide => 31,
             else => 0,
         };
     }
