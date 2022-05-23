@@ -1,14 +1,31 @@
 const std = @import("std");
 
 const Expression = struct {
-    token: Token,
-    @"error": ParseError = ParseError.None,
+    data: union(enum) {
+        @"error": ParseError,
+        identifier: []const u8,
+        string: []const u8,
+        unary_op_neg: void,
+        binary_op_add: void,
+        binary_op_sub: void,
+        binary_op_mul: void,
+        binary_op_div: void,
+        binary_op_eql: void,
+        number: Rational,
+        list: void,
+    },
+    token: ?Token = null,
     next: ?*Expression = null,
 };
 
+const Rational = struct {
+    numerator: u64,
+    denominator: u64,
+};
+
 const ParseError = error{
-    None,
     UnexpectedToken,
+    MalformedNumberLiteral,
 };
 
 const Token = struct {
@@ -188,12 +205,77 @@ fn tokenise(bytes: []const u8) Tokeniser {
     };
 }
 
+fn gcd(a: anytype, b: anytype) @TypeOf(a) {
+    var n = a;
+    var m = b;
+    while (n > 0) {
+        const r = m % n;
+        m = n;
+        n = r;
+    }
+    return m;
+}
+
+fn number(source_bytes: []const u8) !Rational {
+    if (source_bytes.len == 0) return ParseError.MalformedNumberLiteral;
+    if (std.ascii.isDigit(source_bytes[0]) == false) {
+        return ParseError.MalformedNumberLiteral;      
+    }
+    
+    if (source_bytes.len > 2 and source_bytes[0] == '0') {
+        if (source_bytes[1] == 'x') {
+            // TODO(hazeycode): hex number parsing
+            unreachable;
+        }
+    }
+    
+    { // parse base 10
+        var maybe_decimal_point_pos: ?usize = null;
+        for (source_bytes) |char, i| {
+            if (char == '.') {
+                if (i == source_bytes.len) {
+                    return ParseError.MalformedNumberLiteral;
+                }
+                maybe_decimal_point_pos = i;
+            }
+            else if (std.ascii.isDigit(char) == false) {
+                return ParseError.MalformedNumberLiteral;
+            }
+        }
+        
+        if (maybe_decimal_point_pos) |decimal_point_pos| {
+            const s = try std.math.powi(u64, 10, source_bytes.len - (decimal_point_pos + 1));
+            var n: u64 = 0;
+            for (source_bytes) |char| {
+                if (char == '.') continue;
+                n = 10 * n + (char - '0');
+            }
+            const gcd_ = gcd(n, s);
+            return Rational{
+                .numerator = n / gcd_,
+                .denominator = s / gcd_, 
+            };
+        }
+        else {
+            var n: u64 = 0;
+            for (source_bytes) |char| {
+                n = 10 * n + (char - '0');
+            }
+            return Rational{
+                .numerator = n,
+                .denominator = 1,
+            };
+        }
+    }
+}
+
 fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Expression {
     if (tokeniser.next()) |token| {
         switch (token.tag) {
             .minus => {
                 var res = Expression{
                     .token = token,
+                    .data = .unary_op_neg,
                 };
                 if (try expression(allocator, tokeniser)) |expr| {
                     res.next = try allocator.create(Expression);
@@ -201,31 +283,42 @@ fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Exp
                 }
                 return res;
             },
-            .number => {
+            .number => {    
                 var expr0 = Expression{
                     .token = token,
+                    .data = .{
+                        .number = try number(tokeniser.bytes[token.position..(token.position + token.len)]),
+                    },
                 };
 
                 if (tokeniser.next()) |next_token| {
                     var expr1 = Expression{
                         .token = next_token,
+                        .data = undefined,
                     };
 
-                    switch (next_token.tag) {
+                    switch (expr1.token.?.tag) {
                         .equal, .plus, .minus, .times, .divide => {
+                            expr1.data = switch (expr1.token.?.tag) {
+                                .equal => .binary_op_eql,
+                                .plus => .binary_op_add,
+                                .minus => .binary_op_sub,
+                                .times => .binary_op_mul,
+                                .divide => .binary_op_div,
+                                else => unreachable,
+                            };
+                        
                             if (try expression(allocator, tokeniser)) |expr2| {
-                                switch (expr2.token.tag) {
+                                switch (expr2.token.?.tag) {
                                     .equal, .plus, .minus, .times, .divide => {
-                                        if (expr2.token.precedence() < expr1.token.precedence()) {
+                                        if (expr2.token.?.precedence() < expr1.token.?.precedence()) {
                                             const rhs = expr2.next.?.next;
-                                            const temp_lhs_token = expr2.next.?.token;
+                                            const temp_lhs = expr2.next.?.*;
 
                                             expr1.next = try allocator.create(Expression);
                                             expr0.next = try allocator.create(Expression);
 
-                                            expr0.next.?.* = .{
-                                                .token = temp_lhs_token,
-                                            };
+                                            expr0.next.?.* = temp_lhs;
                                             expr0.next.?.next = rhs;
 
                                             expr1.next.?.* = expr0;
@@ -242,11 +335,11 @@ fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Exp
 
                             expr1.next = try allocator.create(Expression);
                             expr1.next.?.* = expr0;
-
+                            
                             return expr1;
                         },
                         else => {
-                            expr1.@"error" = ParseError.UnexpectedToken;
+                            expr1.data = .{ .@"error" = ParseError.UnexpectedToken };
 
                             expr0.next = try allocator.create(Expression);
                             expr0.next.?.* = expr1;
@@ -261,7 +354,7 @@ fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Exp
             else => {
                 return Expression{
                     .token = token,
-                    .@"error" = ParseError.UnexpectedToken,
+                    .data = .{ .@"error" = ParseError.UnexpectedToken },
                 };
             },
         }
@@ -350,37 +443,57 @@ test "tokenise invalid bytes" {
     try testTokenise(test_input, &expected_result);
 }
 
-test "parse" {
+test "parse numbers" {
+    { // integer literal
+        const test_input: []const u8 = "3";
+        try testing.expectEqual(Rational{ .numerator = 3, .denominator = 1 }, try number(test_input));
+    }
+    { // decimal literal
+        const test_input: []const u8 = "3.14";
+        try testing.expectEqual(Rational{ .numerator = 157, .denominator = 50 }, try number(test_input));
+    }
+}
+
+test "parse expressions" {
     const test_input: []const u8 = "2 + 15 * 100 - 17";
 
-    var expected_17 = Expression{ .token = .{ .position = 15, .len = 2, .tag = .number } };
+    var expected_17 = Expression{ 
+        .data = .{ .number = Rational{ .numerator = 17, .denominator = 1 }},
+        .token = .{ .position = 15, .len = 2, .tag = .number },
+    };
 
     var expected_100 = Expression{
+        .data = .{ .number = Rational{ .numerator = 100, .denominator = 1 }},
         .token = .{ .position = 9, .len = 3, .tag = .number },
         .next = &expected_17,
     };
 
     var expected_15 = Expression{
+        .data = .{ .number = Rational{ .numerator = 15, .denominator = 1 }},
         .token = .{ .position = 4, .len = 2, .tag = .number },
         .next = &expected_100,
     };
 
     var expected_times = Expression{
+        .data = .binary_op_mul,
         .token = .{ .position = 7, .len = 1, .tag = .times },
         .next = &expected_15,
     };
 
     var expected_minus = Expression{
+        .data = .binary_op_sub,
         .token = .{ .position = 13, .len = 1, .tag = .minus },
         .next = &expected_times,
     };
 
     var expected_2 = Expression{
+        .data = .{ .number = Rational{ .numerator = 2, .denominator = 1 }},
         .token = .{ .position = 0, .len = 1, .tag = .number },
         .next = &expected_minus,
     };
 
     var expected = Expression{
+        .data = .binary_op_add,
         .token = .{ .position = 2, .len = 1, .tag = .plus },
         .next = &expected_2,
     };
@@ -394,6 +507,7 @@ test "parse" {
     var maybe_cur: ?*Expression = &expr.?;
     while (maybe_expected_cur) |expected_cur| {
         try testing.expectEqual(expected_cur.token, maybe_cur.?.token);
+        try testing.expectEqual(expected_cur.data, maybe_cur.?.data);
         maybe_expected_cur = expected_cur.next;
         maybe_cur = maybe_cur.?.next;
     }
