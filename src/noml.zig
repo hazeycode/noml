@@ -295,7 +295,11 @@ fn number(source_bytes: []const u8) !Rational {
 }
 
 fn boolean(source_bytes: []const u8) ParseError!bool {
-    return if (std.mem.eql(u8, source_bytes, "true")) true else if (std.mem.eql(u8, source_bytes, "false")) false else ParseError.MalformedBooleanLiteral;
+    // zig fmt: off
+    return if (std.mem.eql(u8, source_bytes, "true")) true
+    else if (std.mem.eql(u8, source_bytes, "false")) false
+    else ParseError.MalformedBooleanLiteral;
+    // zig fmt: on
 }
 
 fn booleanExpression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Expression {
