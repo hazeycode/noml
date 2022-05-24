@@ -32,6 +32,7 @@ const ParseError = error{
     UnexpectedToken,
     MalformedNumberLiteral,
     MalformedBooleanLiteral,
+    UnexpectedEndOfStream,
 };
 
 const Token = struct {
@@ -102,38 +103,53 @@ const Token = struct {
 const Tokeniser = struct {
     bytes: []const u8,
     cursor: usize,
-
-    pub fn next(self: *@This()) ?Token {
+    
+    pub fn peek(self: *@This()) ?Token {
+        if (self.cursor >= self.bytes.len) {
+            return null;
+        }
+        
         while (self.cursor < self.bytes.len) {
             if (std.ascii.isSpace(self.bytes[self.cursor])) {
                 self.cursor += 1;
             } else break;
         }
-
-        if (self.cursor >= self.bytes.len) {
-            return null;
-        }
-
+        
         if (Token.map.get(&.{self.bytes[self.cursor]})) |tag| {
-            defer self.cursor += 1;
             return Token{
                 .position = self.cursor,
                 .len = 1,
                 .tag = tag,
             };
         }
-              
+        
         if (std.ascii.isAlpha(self.bytes[self.cursor])) return self.keywordOrIdentifier()
         else if (self.bytes[self.cursor] == '\"') return self.string()
         else if (std.ascii.isDigit(self.bytes[self.cursor])) return self.number()
         else {
-            defer self.cursor += 1;
             return Token{
                 .position = self.cursor,
                 .len = 1,
                 .tag = .invalid_bytes,    
             };
         }
+        
+    }
+
+    pub fn next(self: *@This()) ?Token {
+        return nextToken: {
+            const maybe_token = self.peek();
+            if (maybe_token) |token| self.skip(token) catch unreachable;
+            break :nextToken maybe_token;
+        };
+    }
+    
+    pub fn skip(self: *@This(), token: Token) ParseError!void {
+        const distance = (token.position + token.len) - self.cursor;
+        if (self.cursor + distance > self.bytes.len) {
+            return ParseError.UnexpectedEndOfStream;
+        }
+        self.cursor += distance;
     }
     
     fn keywordOrIdentifier(self: *@This()) Token {
@@ -149,9 +165,7 @@ const Tokeniser = struct {
                 break;
             }
         }
-        
-        defer self.cursor = forward_cursor;
-        
+                
         const len = forward_cursor - self.cursor;
         const tag = Token.map.get(self.bytes[self.cursor..(self.cursor + len)]) orelse .identifier;
         return Token {
@@ -172,21 +186,17 @@ const Tokeniser = struct {
                 escape_next = true;
             }
             else if (escape_next == false and self.bytes[forward_cursor] == '"') {
+                forward_cursor += 1;
                 break;
             }
             else if (escape_next) {
                 escape_next = false;
             }
         }
-        
-        defer self.cursor = forward_cursor + 1;
-        
-        const start = self.cursor + 1;
-        const end = forward_cursor;
-        
+                
         return Token {
-            .position = start,
-            .len = end - start,
+            .position = self.cursor,
+            .len = forward_cursor - self.cursor,
             .tag = .string,
         };
     }
@@ -208,9 +218,7 @@ const Tokeniser = struct {
                 break;
             }
         }
-        
-        defer self.cursor = forward_cursor;
-        
+                
         return Token {
             .position = self.cursor,
             .len = forward_cursor - self.cursor,
@@ -296,79 +304,103 @@ fn boolean(source_bytes: []const u8) ParseError!bool {
     else ParseError.MalformedBooleanLiteral;
 }
 
-fn booleanExpression(allocator: std.mem.Allocator, tokeniser: *Tokeniser, expr: Expression) anyerror!?Expression {
-    var expr0 = expr;
-    
-    if (tokeniser.next()) |next_token| {
-        var expr1 = Expression{
-            .token = next_token,
+fn booleanExpression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Expression {
+    if (tokeniser.next()) |token| {
+        
+        var expr = Expression{
+            .token = token,
             .data = undefined,
         };
         
-        switch (expr1.token.?.tag) {
-            .keyword_and, .keyword_or => {
-                expr1.data = switch (expr1.token.?.tag) {
-                    .keyword_and => .binary_op_and,
-                    .keyword_or => .binary_op_or,
-                    else => unreachable,
+        switch (expr.token.?.tag) {
+            .keyword_true, .keyword_false => {
+                expr.data = .{
+                    .boolean = try boolean(tokeniser.bytes[token.position..(token.position + token.len)]),
                 };
-                
-                if (try expression(allocator, tokeniser)) |expr2| {
-                    switch (expr2.token.?.tag) {
-                        .keyword_and, .keyword_or => {
-                            if (expr2.token.?.precedence() < expr1.token.?.precedence()) {
-                                const rhs = expr2.next.?.next;
-                                const temp_lhs = expr2.next.?.*;
-    
-                                expr1.next = try allocator.create(Expression);
-                                expr0.next = try allocator.create(Expression);
-    
-                                expr0.next.?.* = temp_lhs;
-                                expr0.next.?.next = rhs;
-    
-                                expr1.next.?.* = expr0;
-                                expr2.next.?.* = expr1;
-    
-                                return expr2;
-                            }
-                        },
-                        else => {},
-                    }
-                    expr0.next = try allocator.create(Expression);
-                    expr0.next.?.* = expr2;
-                }
-                
-                expr1.next = try allocator.create(Expression);
-                expr1.next.?.* = expr0;
-                
-                return expr1;
             },
             .keyword_not => {
-                expr1.data = .unary_op_not;
-                if (try expression(allocator, tokeniser)) |expr2| {
-                    expr1.next = try allocator.create(Expression);
-                    expr1.next.?.* = expr2;
+                expr.data = .unary_op_not;
+                if (try booleanExpression(allocator, tokeniser)) |next_expr| {
+                    expr.next = try allocator.create(Expression);
+                    expr.next.?.* = next_expr;
                 }
-                return expr1;
             },
             else => {
-                expr1.data = .{ .@"error" = ParseError.UnexpectedToken };
-    
-                expr0.next = try allocator.create(Expression);
-                expr0.next.?.* = expr1;
-    
-                return expr0;
+                expr.data = .{ .@"error" = ParseError.UnexpectedToken };
+                return expr;
             },
         }
-    } else {
-        return expr0;
+        
+        if (tokeniser.next()) |next_token| {
+            
+            var next_expr = Expression{
+                .token = next_token,
+                .data = undefined,
+            };
+            
+            switch (next_expr.token.?.tag) {
+                .keyword_and, .keyword_or => {
+                    next_expr.data = switch (next_expr.token.?.tag) {
+                        .keyword_and => .binary_op_and,
+                        .keyword_or => .binary_op_or,
+                        else => unreachable,
+                    };
+                    
+                    if (try booleanExpression(allocator, tokeniser)) |next_next_expr| {
+                        switch (next_next_expr.token.?.tag) {
+                            .keyword_and, .keyword_or => {
+                                if (next_next_expr.token.?.precedence() <= next_expr.token.?.precedence()) {
+                                    const rhs = next_next_expr.next.?.next;
+                                    const temp_lhs = next_next_expr.next.?.*;
+        
+                                    next_expr.next = try allocator.create(Expression);
+                                    expr.next = try allocator.create(Expression);
+        
+                                    expr.next.?.* = temp_lhs;
+                                    expr.next.?.next = rhs;
+        
+                                    next_expr.next.?.* = expr;
+                                    next_next_expr.next.?.* = next_expr;
+        
+                                    return next_next_expr;
+                                }
+                            },
+                            else => {},
+                        }
+                        expr.next = try allocator.create(Expression);
+                        expr.next.?.* = next_next_expr;
+                    }
+                    
+                    next_expr.next = try allocator.create(Expression);
+                    next_expr.next.?.* = expr;
+                    
+                    return next_expr;
+                },
+                else => {
+                    next_expr.data = .{ .@"error" = ParseError.UnexpectedToken };
+        
+                    expr.next = try allocator.create(Expression);
+                    expr.next.?.* = next_expr;
+        
+                    return expr;
+                },
+            }
+        }
+        
+        return expr;
     }
+    
+    return null;
 }
 
 fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Expression {
-    if (tokeniser.next()) |token| {
+    if (tokeniser.peek()) |token| {
         switch (token.tag) {
+            .keyword_true, .keyword_false, .keyword_not => { 
+                return try booleanExpression(allocator, tokeniser);
+            },
             .minus => {
+                try tokeniser.skip(token);
                 var res = Expression{
                     .token = token,
                     .data = .unary_op_neg,
@@ -379,7 +411,8 @@ fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Exp
                 }
                 return res;
             },
-            .number => {    
+            .number => {
+                try tokeniser.skip(token);
                 var expr0 = Expression{
                     .token = token,
                     .data = .{
@@ -447,24 +480,7 @@ fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Exp
                     return expr0;
                 }
             },
-            .keyword_true => {
-                return try booleanExpression(allocator, tokeniser, .{
-                    .token = token,
-                    .data = .{ .boolean = true },
-                });
-            },
-            .keyword_false => {
-                return try booleanExpression(allocator, tokeniser, .{
-                    .token = token,
-                    .data = .{ .boolean = false },
-                });
-            },
-            .keyword_not => {
-                return Expression{
-                    .token = token,
-                    .data = .unary_op_not,  
-                };
-            },
+            
             else => {
                 return Expression{
                     .token = token,
@@ -513,24 +529,33 @@ fn testTokenise(input: []const u8, expected: []const Token) !void {
     try testing.expectEqualSlices(Token, expected, tokens.items);
 }
 
-fn testExpectExpression(expr: *Expression, expected: *Expression) !void {
+fn testExpectExpression(expected: *Expression, expr: *Expression) !void {
     var maybe_expected_cur: ?*Expression = expected;
     var maybe_cur: ?*Expression = expr;
-    while (maybe_expected_cur) |expected_cur| {
-        { // test data before token for debugging purposes
-            errdefer {
-                // if data does not match expected then log the expected and actual token positions
-                // for debugging purposes
-                if (expected_cur.token) |expected_token| {
+    
+    errdefer {
+        // if data does not match expected then log the expected and actual token positions
+        // for debugging purposes
+        maybe_expected_cur = expected;
+        maybe_cur = expr;
+        var i: u32 = 0;
+        while (maybe_expected_cur) |expected_cur| : (i += 1) {
+            if (expected_cur.token) |expected_token| {
+                if (expected_token.position != maybe_cur.?.token.?.position) {
                     std.log.err(
-                        "expected pos {}, got {}",
-                        .{expected_token.position, maybe_cur.?.token.?.position},
+                        "expr with idx {} incorrect: expected pos {}, got {}",
+                        .{i, expected_token.position, maybe_cur.?.token.?.position},
                     );
                 }
             }
-            
-            try testing.expectEqual(expected_cur.data, maybe_cur.?.data);
+            maybe_expected_cur = expected_cur.next;
+            maybe_cur = maybe_cur.?.next;
         }
+    }
+    
+    while (maybe_expected_cur) |expected_cur| {
+        // test data before token for debugging purposes            
+        try testing.expectEqual(expected_cur.data, maybe_cur.?.data);
 
         if (expected_cur.token) |expected_token| {
             // test token tag first for debugging purposes
@@ -578,7 +603,7 @@ test "tokenise string literals" {
     ;
     
     const expected_result = .{
-        Token{ .position = 1, .len = 26, .tag = .string },
+        Token{ .position = 0, .len = 28, .tag = .string },
     };
     
     try testTokenise(test_input, &expected_result);
@@ -612,11 +637,17 @@ test "tokenise invalid bytes" {
 test "parse numbers" {
     { // integer literal
         const test_input: []const u8 = "3";
-        try testing.expectEqual(Rational{ .numerator = 3, .denominator = 1 }, try number(test_input));
+        try testing.expectEqual(
+            Rational{ .numerator = 3, .denominator = 1 },
+            try number(test_input),
+        );
     }
     { // decimal literal
         const test_input: []const u8 = "3.14";
-        try testing.expectEqual(Rational{ .numerator = 157, .denominator = 50 }, try number(test_input));
+        try testing.expectEqual(
+            Rational{ .numerator = 157, .denominator = 50 },
+            try number(test_input),
+        );
     }
 }
 
@@ -712,13 +743,13 @@ test "parse boolean logic expressions" {
     
     var expected_or_2nd = Expression{
         .data = .binary_op_or,
-        .token = .{ .position = 23, .len = 2, .tag = .keyword_or },
+        .token = .{ .position = 15, .len = 2, .tag = .keyword_or },
         .next = &expected_and,
     };
     
     var expected = Expression{
         .data = .binary_op_or,
-        .token = .{ .position = 15, .len = 2, .tag = .keyword_or },
+        .token = .{ .position = 23, .len = 2, .tag = .keyword_or },
         .next = &expected_or_2nd,
     };
     
