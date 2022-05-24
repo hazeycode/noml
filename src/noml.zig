@@ -5,7 +5,7 @@ const Expression = struct {
         identifier: []const u8,
         string: []const u8,
         number: Rational,
-        boolean: bool,        
+        boolean: bool,
         list: void,
         unary_op_neg: void,
         unary_op_not: void,
@@ -103,18 +103,18 @@ const Token = struct {
 const Tokeniser = struct {
     bytes: []const u8,
     cursor: usize,
-    
+
     pub fn peek(self: *@This()) ?Token {
         if (self.cursor >= self.bytes.len) {
             return null;
         }
-        
+
         while (self.cursor < self.bytes.len) {
             if (std.ascii.isSpace(self.bytes[self.cursor])) {
                 self.cursor += 1;
             } else break;
         }
-        
+
         if (Token.map.get(&.{self.bytes[self.cursor]})) |tag| {
             return Token{
                 .position = self.cursor,
@@ -122,7 +122,8 @@ const Tokeniser = struct {
                 .tag = tag,
             };
         }
-        
+
+        // zig fmt: off
         if (std.ascii.isAlpha(self.bytes[self.cursor])) return self.keywordOrIdentifier()
         else if (self.bytes[self.cursor] == '\"') return self.string()
         else if (std.ascii.isDigit(self.bytes[self.cursor])) return self.number()
@@ -130,10 +131,10 @@ const Tokeniser = struct {
             return Token{
                 .position = self.cursor,
                 .len = 1,
-                .tag = .invalid_bytes,    
+                .tag = .invalid_bytes,
             };
         }
-        
+        // zig fmt: on
     }
 
     pub fn next(self: *@This()) ?Token {
@@ -143,7 +144,7 @@ const Tokeniser = struct {
             break :nextToken maybe_token;
         };
     }
-    
+
     pub fn skip(self: *@This(), token: Token) ParseError!void {
         const distance = (token.position + token.len) - self.cursor;
         if (self.cursor + distance > self.bytes.len) {
@@ -151,13 +152,13 @@ const Tokeniser = struct {
         }
         self.cursor += distance;
     }
-    
+
     fn keywordOrIdentifier(self: *@This()) Token {
         var forward_cursor = self.cursor + 1;
-        
+
         while (forward_cursor < self.bytes.len) : (forward_cursor += 1) {
             const char = self.bytes[forward_cursor];
-            
+
             if (std.ascii.isSpace(char)) {
                 break;
             }
@@ -165,61 +166,58 @@ const Tokeniser = struct {
                 break;
             }
         }
-                
+
         const len = forward_cursor - self.cursor;
         const tag = Token.map.get(self.bytes[self.cursor..(self.cursor + len)]) orelse .identifier;
-        return Token {
+        return Token{
             .position = self.cursor,
             .len = len,
             .tag = tag,
         };
     }
-    
+
     fn string(self: *@This()) Token {
         var forward_cursor = self.cursor + 1;
         var escape_next = false;
-        
+
         while (forward_cursor < self.bytes.len) : (forward_cursor += 1) {
             const char = self.bytes[forward_cursor];
-            
+
             if (char == '\\') {
                 escape_next = true;
-            }
-            else if (escape_next == false and self.bytes[forward_cursor] == '"') {
+            } else if (escape_next == false and self.bytes[forward_cursor] == '"') {
                 forward_cursor += 1;
                 break;
-            }
-            else if (escape_next) {
+            } else if (escape_next) {
                 escape_next = false;
             }
         }
-                
-        return Token {
+
+        return Token{
             .position = self.cursor,
             .len = forward_cursor - self.cursor,
             .tag = .string,
         };
     }
-    
+
     fn number(self: *@This()) Token {
         var forward_cursor = self.cursor + 1;
         var decimal_point_encountered = false;
-        
+
         while (forward_cursor < self.bytes.len) : (forward_cursor += 1) {
             const char = self.bytes[forward_cursor];
-            
+
             if (char == '.') {
                 if (decimal_point_encountered) {
                     break;
                 }
                 decimal_point_encountered = true;
-            }
-            else if (std.ascii.isDigit(char) == false) {
+            } else if (std.ascii.isDigit(char) == false) {
                 break;
             }
         }
-                
-        return Token {
+
+        return Token{
             .position = self.cursor,
             .len = forward_cursor - self.cursor,
             .tag = .number,
@@ -248,16 +246,16 @@ fn gcd(a: anytype, b: anytype) @TypeOf(a) {
 fn number(source_bytes: []const u8) !Rational {
     if (source_bytes.len == 0) return ParseError.MalformedNumberLiteral;
     if (std.ascii.isDigit(source_bytes[0]) == false) {
-        return ParseError.MalformedNumberLiteral;      
+        return ParseError.MalformedNumberLiteral;
     }
-    
+
     if (source_bytes.len > 2 and source_bytes[0] == '0') {
         if (source_bytes[1] == 'x') {
             // TODO(hazeycode): hex number parsing
             unreachable;
         }
     }
-    
+
     { // parse base 10
         var maybe_decimal_point_pos: ?usize = null;
         for (source_bytes) |char, i| {
@@ -266,12 +264,11 @@ fn number(source_bytes: []const u8) !Rational {
                     return ParseError.MalformedNumberLiteral;
                 }
                 maybe_decimal_point_pos = i;
-            }
-            else if (std.ascii.isDigit(char) == false) {
+            } else if (std.ascii.isDigit(char) == false) {
                 return ParseError.MalformedNumberLiteral;
             }
         }
-        
+
         if (maybe_decimal_point_pos) |decimal_point_pos| {
             const s = try std.math.powi(u64, 10, source_bytes.len - (decimal_point_pos + 1));
             var n: u64 = 0;
@@ -282,10 +279,9 @@ fn number(source_bytes: []const u8) !Rational {
             const gcd_ = gcd(n, s);
             return Rational{
                 .numerator = n / gcd_,
-                .denominator = s / gcd_, 
+                .denominator = s / gcd_,
             };
-        }
-        else {
+        } else {
             var n: u64 = 0;
             for (source_bytes) |char| {
                 n = 10 * n + (char - '0');
@@ -299,19 +295,16 @@ fn number(source_bytes: []const u8) !Rational {
 }
 
 fn boolean(source_bytes: []const u8) ParseError!bool {
-    return if (std.mem.eql(u8, source_bytes, "true")) true
-    else if (std.mem.eql(u8, source_bytes, "false")) false
-    else ParseError.MalformedBooleanLiteral;
+    return if (std.mem.eql(u8, source_bytes, "true")) true else if (std.mem.eql(u8, source_bytes, "false")) false else ParseError.MalformedBooleanLiteral;
 }
 
 fn booleanExpression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Expression {
     if (tokeniser.next()) |token| {
-        
         var expr = Expression{
             .token = token,
             .data = undefined,
         };
-        
+
         switch (expr.token.?.tag) {
             .keyword_true, .keyword_false => {
                 expr.data = .{
@@ -330,14 +323,13 @@ fn booleanExpression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerr
                 return expr;
             },
         }
-        
+
         if (tokeniser.next()) |next_token| {
-            
             var next_expr = Expression{
                 .token = next_token,
                 .data = undefined,
             };
-            
+
             switch (next_expr.token.?.tag) {
                 .keyword_and, .keyword_or => {
                     next_expr.data = switch (next_expr.token.?.tag) {
@@ -345,23 +337,23 @@ fn booleanExpression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerr
                         .keyword_or => .binary_op_or,
                         else => unreachable,
                     };
-                    
+
                     if (try booleanExpression(allocator, tokeniser)) |next_next_expr| {
                         switch (next_next_expr.token.?.tag) {
                             .keyword_and, .keyword_or => {
                                 if (next_next_expr.token.?.precedence() <= next_expr.token.?.precedence()) {
                                     const rhs = next_next_expr.next.?.next;
                                     const temp_lhs = next_next_expr.next.?.*;
-        
+
                                     next_expr.next = try allocator.create(Expression);
                                     expr.next = try allocator.create(Expression);
-        
+
                                     expr.next.?.* = temp_lhs;
                                     expr.next.?.next = rhs;
-        
+
                                     next_expr.next.?.* = expr;
                                     next_next_expr.next.?.* = next_expr;
-        
+
                                     return next_next_expr;
                                 }
                             },
@@ -370,33 +362,33 @@ fn booleanExpression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerr
                         expr.next = try allocator.create(Expression);
                         expr.next.?.* = next_next_expr;
                     }
-                    
+
                     next_expr.next = try allocator.create(Expression);
                     next_expr.next.?.* = expr;
-                    
+
                     return next_expr;
                 },
                 else => {
                     next_expr.data = .{ .@"error" = ParseError.UnexpectedToken };
-        
+
                     expr.next = try allocator.create(Expression);
                     expr.next.?.* = next_expr;
-        
+
                     return expr;
                 },
             }
         }
-        
+
         return expr;
     }
-    
+
     return null;
 }
 
 fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Expression {
     if (tokeniser.peek()) |token| {
         switch (token.tag) {
-            .keyword_true, .keyword_false, .keyword_not => { 
+            .keyword_true, .keyword_false, .keyword_not => {
                 return try booleanExpression(allocator, tokeniser);
             },
             .minus => {
@@ -436,7 +428,7 @@ fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Exp
                                 .divide => .binary_op_div,
                                 else => unreachable,
                             };
-                        
+
                             if (try expression(allocator, tokeniser)) |expr2| {
                                 switch (expr2.token.?.tag) {
                                     .equal, .plus, .minus, .times, .divide => {
@@ -464,7 +456,7 @@ fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Exp
 
                             expr1.next = try allocator.create(Expression);
                             expr1.next.?.* = expr0;
-                            
+
                             return expr1;
                         },
                         else => {
@@ -480,7 +472,7 @@ fn expression(allocator: std.mem.Allocator, tokeniser: *Tokeniser) anyerror!?Exp
                     return expr0;
                 }
             },
-            
+
             else => {
                 return Expression{
                     .token = token,
@@ -510,7 +502,6 @@ pub fn free(allocator: std.mem.Allocator, expr: Expression) void {
     }
 }
 
-
 // TESTS ----------------------------------------------------------------------------------------------------
 
 const testing = std.testing;
@@ -525,14 +516,14 @@ fn testTokenise(input: []const u8, expected: []const Token) !void {
     while (tokeniser.next()) |token| {
         try tokens.append(token);
     }
-    
+
     try testing.expectEqualSlices(Token, expected, tokens.items);
 }
 
 fn testExpectExpression(expected: *Expression, expr: *Expression) !void {
     var maybe_expected_cur: ?*Expression = expected;
     var maybe_cur: ?*Expression = expr;
-    
+
     errdefer {
         // if data does not match expected then log the expected and actual token positions
         // for debugging purposes
@@ -544,7 +535,7 @@ fn testExpectExpression(expected: *Expression, expr: *Expression) !void {
                 if (expected_token.position != maybe_cur.?.token.?.position) {
                     std.log.err(
                         "expr with idx {} incorrect: expected pos {}, got {}",
-                        .{i, expected_token.position, maybe_cur.?.token.?.position},
+                        .{ i, expected_token.position, maybe_cur.?.token.?.position },
                     );
                 }
             }
@@ -552,9 +543,9 @@ fn testExpectExpression(expected: *Expression, expr: *Expression) !void {
             maybe_cur = maybe_cur.?.next;
         }
     }
-    
+
     while (maybe_expected_cur) |expected_cur| {
-        // test data before token for debugging purposes            
+        // test data before token for debugging purposes
         try testing.expectEqual(expected_cur.data, maybe_cur.?.data);
 
         if (expected_cur.token) |expected_token| {
@@ -562,11 +553,10 @@ fn testExpectExpression(expected: *Expression, expr: *Expression) !void {
             try testing.expectEqual(expected_token.tag, maybe_cur.?.token.?.tag);
             try testing.expectEqual(expected_token.position, maybe_cur.?.token.?.position);
             try testing.expectEqual(expected_token.len, maybe_cur.?.token.?.len);
-        }
-        else {
+        } else {
             try testing.expectEqual(@as(?Token, null), maybe_cur.?.token);
         }
-        
+
         maybe_expected_cur = expected_cur.next;
         maybe_cur = maybe_cur.?.next;
     }
@@ -601,17 +591,17 @@ test "tokenise string literals" {
     const test_input: []const u8 =
         \\"Behold! I am a \"string\"!"
     ;
-    
+
     const expected_result = .{
         Token{ .position = 0, .len = 28, .tag = .string },
     };
-    
+
     try testTokenise(test_input, &expected_result);
 }
 
 test "tokenise boolean logic keywords" {
     const test_input: []const u8 = "true or false and not true";
-    
+
     const expected_result = .{
         Token{ .position = 0, .len = 4, .tag = .keyword_true },
         Token{ .position = 5, .len = 2, .tag = .keyword_or },
@@ -620,7 +610,7 @@ test "tokenise boolean logic keywords" {
         Token{ .position = 18, .len = 3, .tag = .keyword_not },
         Token{ .position = 22, .len = 4, .tag = .keyword_true },
     };
-    
+
     try testTokenise(test_input, &expected_result);
 }
 
@@ -654,19 +644,19 @@ test "parse numbers" {
 test "parse basic arthimetic expressions" {
     const test_input: []const u8 = "2 + 15 * 100 - 17";
 
-    var expected_17 = Expression{ 
-        .data = .{ .number = Rational{ .numerator = 17, .denominator = 1 }},
+    var expected_17 = Expression{
+        .data = .{ .number = Rational{ .numerator = 17, .denominator = 1 } },
         .token = .{ .position = 15, .len = 2, .tag = .number },
     };
 
     var expected_100 = Expression{
-        .data = .{ .number = Rational{ .numerator = 100, .denominator = 1 }},
+        .data = .{ .number = Rational{ .numerator = 100, .denominator = 1 } },
         .token = .{ .position = 9, .len = 3, .tag = .number },
         .next = &expected_17,
     };
 
     var expected_15 = Expression{
-        .data = .{ .number = Rational{ .numerator = 15, .denominator = 1 }},
+        .data = .{ .number = Rational{ .numerator = 15, .denominator = 1 } },
         .token = .{ .position = 4, .len = 2, .tag = .number },
         .next = &expected_100,
     };
@@ -684,7 +674,7 @@ test "parse basic arthimetic expressions" {
     };
 
     var expected_2 = Expression{
-        .data = .{ .number = Rational{ .numerator = 2, .denominator = 1 }},
+        .data = .{ .number = Rational{ .numerator = 2, .denominator = 1 } },
         .token = .{ .position = 0, .len = 1, .tag = .number },
         .next = &expected_minus,
     };
@@ -699,65 +689,64 @@ test "parse basic arthimetic expressions" {
     try testing.expect(expr != null);
 
     defer free(testing.allocator, expr.?);
-    
+
     try testExpectExpression(&expected, &expr.?);
 }
 
 test "parse boolean logic expressions" {
     const test_input: []const u8 = "true and false or true or not true"; // lol!
-    
+
     var expected_true_3rd = Expression{
         .data = .{ .boolean = true },
         .token = .{ .position = 30, .len = 4, .tag = .keyword_true },
     };
-    
+
     var expected_not = Expression{
         .data = .unary_op_not,
         .token = .{ .position = 26, .len = 3, .tag = .keyword_not },
         .next = &expected_true_3rd,
     };
-    
+
     var expected_true_2nd = Expression{
         .data = .{ .boolean = true },
         .token = .{ .position = 18, .len = 4, .tag = .keyword_true },
         .next = &expected_not,
     };
-    
+
     var expected_false = Expression{
         .data = .{ .boolean = false },
         .token = .{ .position = 9, .len = 5, .tag = .keyword_false },
         .next = &expected_true_2nd,
     };
-    
+
     var expected_true_1st = Expression{
         .data = .{ .boolean = true },
         .token = .{ .position = 0, .len = 4, .tag = .keyword_true },
         .next = &expected_false,
     };
-    
+
     var expected_and = Expression{
         .data = .binary_op_and,
         .token = .{ .position = 5, .len = 3, .tag = .keyword_and },
         .next = &expected_true_1st,
     };
-    
+
     var expected_or_2nd = Expression{
         .data = .binary_op_or,
         .token = .{ .position = 15, .len = 2, .tag = .keyword_or },
         .next = &expected_and,
     };
-    
+
     var expected = Expression{
         .data = .binary_op_or,
         .token = .{ .position = 23, .len = 2, .tag = .keyword_or },
         .next = &expected_or_2nd,
     };
-    
+
     var expr = try parse(testing.allocator, test_input);
     try testing.expect(expr != null);
-    
+
     defer free(testing.allocator, expr.?);
-    
+
     try testExpectExpression(&expected, &expr.?);
 }
-
