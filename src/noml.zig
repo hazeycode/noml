@@ -272,7 +272,7 @@ const Parser = struct {
     allocator: std.mem.Allocator,
     tokeniser: Tokeniser,
        
-    /// Gets the next token and produces an Expression, or null if there's no tokens left
+    /// Reads the next token and produces an Expression, or null if there's no tokens left
     pub fn nextExpr(self: *@This()) !?*Expression {
         if (self.tokeniser.next()) |token| {
             var expr = try self.allocator.create(Expression);
@@ -286,11 +286,19 @@ const Parser = struct {
                         self.tokeniser.bytes[token.position..(token.position + token.len)],
                     ),
                 },
+                .boolean => .{
+                    .boolean = try boolean(
+                        self.tokeniser.bytes[token.position..(token.position + token.len)],
+                    ),
+                },
                 .equal => .binary_op_eql,
                 .plus => .binary_op_add,
                 .minus => .binary_op_sub,
                 .times => .binary_op_mul,
                 .divide => .binary_op_div,
+                .keyword_and => .binary_op_add,
+                .keyword_or => .binary_op_or,
+                .keyword_not => .unary_op_not,
                 else => .{ .@"error" = ParseError.UnexpectedToken },
             };
 
@@ -307,12 +315,17 @@ const Parser = struct {
                 next_expr.prev = null;
                 
                 switch (next_token.tag) {
-                    .plus, .minus, .times, .divide => {                        
+                    // zig fmt: off
+                    .plus, .minus, .times, .divide,
+                    .keyword_and, .keyword_or => {
+                    // zig fmt: on                  
                         next_expr.data = switch (next_token.tag) {
                             .plus => .binary_op_add,
                             .minus => .binary_op_sub,
                             .times => .binary_op_mul,
                             .divide => .binary_op_div,
+                            .keyword_and => .binary_op_and,
+                            .keyword_or => .binary_op_or,
                             else => unreachable,
                         };
                         expr.prev = next_expr;
@@ -663,59 +676,60 @@ test "parse basic arthimetic expressions" {
     try testExpectExpression(&expected, expr);
 }
 
-// test "parse boolean logic expressions" {
-//     const test_input: []const u8 = "true and false or true or not true"; // lol!
+test "parse boolean logic expressions" {
+    const test_input: []const u8 = "true and false or true or not true"; // lol!
 
-//     var expected_true_3rd = Expression{
-//         .data = .{ .boolean = true },
-//         .token = .{ .position = 30, .len = 4, .tag = .keyword_true },
-//     };
+    var expected_true_3rd = Expression{
+        .data = .{ .boolean = true },
+        .token = .{ .position = 30, .len = 4, .tag = .keyword_true },
+    };
 
-//     var expected_not = Expression{
-//         .data = .unary_op_not,
-//         .token = .{ .position = 26, .len = 3, .tag = .keyword_not },
-//         .next = &expected_true_3rd,
-//     };
+    var expected_not = Expression{
+        .data = .unary_op_not,
+        .token = .{ .position = 26, .len = 3, .tag = .keyword_not },
+        .next = &expected_true_3rd,
+    };
 
-//     var expected_true_2nd = Expression{
-//         .data = .{ .boolean = true },
-//         .token = .{ .position = 18, .len = 4, .tag = .keyword_true },
-//         .next = &expected_not,
-//     };
+    var expected_true_2nd = Expression{
+        .data = .{ .boolean = true },
+        .token = .{ .position = 18, .len = 4, .tag = .keyword_true },
+        .next = &expected_not,
+    };
 
-//     var expected_false = Expression{
-//         .data = .{ .boolean = false },
-//         .token = .{ .position = 9, .len = 5, .tag = .keyword_false },
-//         .next = &expected_true_2nd,
-//     };
+    var expected_false = Expression{
+        .data = .{ .boolean = false },
+        .token = .{ .position = 9, .len = 5, .tag = .keyword_false },
+        .next = &expected_true_2nd,
+    };
 
-//     var expected_true_1st = Expression{
-//         .data = .{ .boolean = true },
-//         .token = .{ .position = 0, .len = 4, .tag = .keyword_true },
-//         .next = &expected_false,
-//     };
+    var expected_true_1st = Expression{
+        .data = .{ .boolean = true },
+        .token = .{ .position = 0, .len = 4, .tag = .keyword_true },
+        .next = &expected_false,
+    };
 
-//     var expected_and = Expression{
-//         .data = .binary_op_and,
-//         .token = .{ .position = 5, .len = 3, .tag = .keyword_and },
-//         .next = &expected_true_1st,
-//     };
+    var expected_and = Expression{
+        .data = .binary_op_and,
+        .token = .{ .position = 5, .len = 3, .tag = .keyword_and },
+        .next = &expected_true_1st,
+    };
 
-//     var expected_or_2nd = Expression{
-//         .data = .binary_op_or,
-//         .token = .{ .position = 15, .len = 2, .tag = .keyword_or },
-//         .next = &expected_and,
-//     };
+    var expected_or_2nd = Expression{
+        .data = .binary_op_or,
+        .token = .{ .position = 15, .len = 2, .tag = .keyword_or },
+        .next = &expected_and,
+    };
 
-//     var expected = Expression{
-//         .data = .binary_op_or,
-//         .token = .{ .position = 23, .len = 2, .tag = .keyword_or },
-//         .next = &expected_or_2nd,
-//     };
+    var expected = Expression{
+        .data = .binary_op_or,
+        .token = .{ .position = 23, .len = 2, .tag = .keyword_or },
+        .next = &expected_or_2nd,
+    };
 
-//     var expr = try parse(testing.allocator, test_input);
+    var expr = try parse(testing.allocator, test_input);
 
-//     defer free(testing.allocator, expr);
+    defer free(testing.allocator, expr);
 
-//     try testExpectExpression(&expected, expr);
-// }
+    try testExpectExpression(&expected, expr);
+}
+
